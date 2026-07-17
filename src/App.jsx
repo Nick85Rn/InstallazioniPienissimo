@@ -1,7 +1,10 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
+import MarkerClusterGroup from 'react-leaflet-cluster';
 import Papa from 'papaparse';
 import 'leaflet/dist/leaflet.css';
+import 'leaflet.markercluster/dist/MarkerCluster.css';
+import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import { supabase, LOCALI_TABLE } from './supabaseClient';
 import GeocodingTool from './GeocodingTool'; 
 import L from 'leaflet';
@@ -157,6 +160,8 @@ export default function App() {
   };
 
   // --- CARICAMENTO DA SUPABASE (zoho_raw_locali) ---
+  // Paginato con .range(): Supabase limita le righe per richiesta (default 1000),
+  // e la tabella contiene ~6000 record.
   const loadFromSupabase = async () => {
     setLoading(true);
     setLoadError(null);
@@ -164,6 +169,7 @@ export default function App() {
       const pageSize = 1000;
       let from = 0;
       let all = [];
+      // eslint-disable-next-line no-constant-condition
       while (true) {
         const { data: page, error } = await supabase
           .from(LOCALI_TABLE)
@@ -191,6 +197,7 @@ export default function App() {
     loadFromSupabase();
   }, []);
 
+  // --- GESTIONE MODIFICA ---
   const handleEditChange = (field, value) => {
       setEditForm(prev => {
           const newData = { ...prev, [field]: value };
@@ -230,6 +237,9 @@ export default function App() {
       setData(updatedData);
       setEditingId(null);
 
+      // Se il record viene da Supabase (ha uno zohoLocaleId), persistiamo la modifica.
+      // indirizzo_fonte='manuale' impedisce alle sync successive di sovrascrivere
+      // questa correzione con quanto trovato su Zoho CRM.
       if (editedItem && editedItem.zohoLocaleId) {
           setSaving(true);
           try {
@@ -247,24 +257,28 @@ export default function App() {
               if (error) throw error;
           } catch (err) {
               console.error('Errore salvataggio su Supabase:', err);
-              alert('Modifica salvata solo localmente: errore di sincronizzazione con Supabase.\n' + err.message);
+              alert('⚠️ Modifica salvata solo localmente: errore di sincronizzazione con Supabase.\n' + err.message);
           } finally {
               setSaving(false);
           }
       }
   };
 
+  // --- DOWNLOAD JSON (CON DATA E ORA) ---
   const downloadJSON = () => {
     const jsonString = JSON.stringify(data, null, 2);
     const blob = new Blob([jsonString], { type: "application/json" });
     const href = URL.createObjectURL(blob);
+    
     const now = new Date();
     const year = now.getFullYear();
     const month = String(now.getMonth() + 1).padStart(2, '0');
     const day = String(now.getDate()).padStart(2, '0');
     const hours = String(now.getHours()).padStart(2, '0');
     const minutes = String(now.getMinutes()).padStart(2, '0');
+    
     const fileName = `ristoranti_${year}-${month}-${day}_${hours}-${minutes}.json`;
+
     const link = document.createElement('a');
     link.href = href;
     link.download = fileName;
@@ -273,6 +287,7 @@ export default function App() {
     document.body.removeChild(link);
   };
 
+  // --- UPLOAD CSV ---
   const handleCsvUpload = (e) => {
     const file = e.target.files[0];
     if (file) {
@@ -288,28 +303,35 @@ export default function App() {
     }
   };
 
+  // --- UPLOAD JSON ---
   const handleJsonUpload = (e) => {
     const file = e.target.files[0];
     if (!file) return;
+
     const reader = new FileReader();
     reader.onload = (event) => {
       try {
         const parsedData = JSON.parse(event.target.result);
         if (Array.isArray(parsedData)) {
+            // Non serve rinormalizzare se il JSON è già stato pulito e ha ID, 
+            // ma per sicurezza rigeneriamo gli ID se mancano o sono duplicati
+            // (oppure ci fidiamo del JSON salvato).
+            // Per sicurezza, se il JSON viene da noi, lo usiamo diretto.
             setData(parsedData);
             fitMapToData(parsedData);
-            alert(`Database ripristinato! Caricati ${parsedData.length} ristoranti.`);
+            alert(`✅ Database ripristinato! Caricati ${parsedData.length} ristoranti.`);
         } else {
-            alert("Il file JSON non sembra corretto (deve essere una lista).");
+            alert("❌ Il file JSON non sembra corretto (deve essere una lista).");
         }
       } catch (error) {
         console.error(error);
-        alert("Errore nella lettura del file JSON.");
+        alert("❌ Errore nella lettura del file JSON.");
       }
     };
     reader.readAsText(file);
   };
 
+  // --- FILTRAGGIO ---
   const filteredData = useMemo(() => {
     return data.filter(r => {
         const s = search.toLowerCase();
@@ -317,10 +339,13 @@ export default function App() {
             r.nomeRistorante?.toLowerCase().includes(s) || 
             r.citta?.toLowerCase().includes(s) ||
             r.indirizzo?.toLowerCase().includes(s);
+
         const matchReg = filters.regione === "" || r.regione === filters.regione;
         const matchProv = filters.provincia === "" || r.provincia === filters.provincia;
         const matchCont = filters.contratto === "" || r.tipoContratto === filters.contratto;
+        // Nessuno stato selezionato = nessun filtro (mostra tutti gli stati)
         const matchStato = filters.statoCliente.length === 0 || filters.statoCliente.includes(r.statoCliente);
+
         return matchSearch && matchReg && matchProv && matchCont && matchStato;
     });
   }, [data, search, filters]);
@@ -331,6 +356,9 @@ export default function App() {
         ? [...new Set(data.filter(r => r.regione === filters.regione).map(r => r.provincia))].sort()
         : [...new Set(data.map(r => r.provincia))].sort();
     const contracts = [...new Set(data.map(r => r.tipoContratto))].sort();
+
+    // Stati cliente presenti nei dati, ordinati secondo STATO_CLIENTE_ORDER
+    // (quelli non previsti in quella lista finiscono in coda, in ordine alfabetico)
     const statesPresent = [...new Set(data.map(r => r.statoCliente).filter(Boolean))];
     const statiCliente = statesPresent.sort((a, b) => {
         const ia = STATO_CLIENTE_ORDER.indexOf(a);
@@ -340,6 +368,7 @@ export default function App() {
         if (ib === -1) return -1;
         return ia - ib;
     });
+
     return { regions, provinces: availableProvs, contracts, statiCliente };
   }, [data, filters.regione]);
 
@@ -348,11 +377,13 @@ export default function App() {
     const regionCount = {};
     const provCount = {};
     const contractCount = {};
+    
     subset.forEach(r => {
       regionCount[r.regione] = (regionCount[r.regione] || 0) + 1;
       provCount[r.provincia] = (provCount[r.provincia] || 0) + 1;
       contractCount[r.tipoContratto] = (contractCount[r.tipoContratto] || 0) + 1;
     });
+
     return { 
       total: subset.length, 
       mapped: subset.filter(r => r.lat && r.lng).length,
@@ -378,6 +409,7 @@ export default function App() {
 
   const handleRowClick = (r) => {
     if (editingId === r.id) return;
+
     setSelectedId(r.id); 
     if (r.lat && r.lng) {
       setMapBounds(null); 
@@ -402,8 +434,12 @@ export default function App() {
     window.open(`https://www.google.com/maps/search/?api=1&query=${query}`, '_blank');
   };
 
+  // Chiamato dal GeocodingTool per ogni record geocodificato con successo:
+  // aggiorna lo stato locale e, se il record viene da Supabase, salva subito
+  // lat/lng nel database (indirizzo_fonte resta quello originale, non 'manuale').
   const handleGeocodedItem = async (item) => {
     setData(prev => prev.map(r => (r.id === item.id ? { ...r, ...item } : r)));
+
     if (item.zohoLocaleId && item.lat && item.lng) {
       try {
         const { error } = await supabase
@@ -425,7 +461,7 @@ export default function App() {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', width: '100vw', fontFamily: 'Segoe UI, sans-serif', color: '#2c3e50' }}>
         <div style={{ textAlign: 'center' }}>
-          <div style={{ fontSize: '32px', marginBottom: '10px' }}>Caricamento</div>
+          <div style={{ fontSize: '32px', marginBottom: '10px' }}>📍</div>
           <div>Caricamento installazioni da Supabase...</div>
         </div>
       </div>
@@ -436,9 +472,10 @@ export default function App() {
     return (
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100vh', width: '100vw', fontFamily: 'Segoe UI, sans-serif' }}>
         <div style={{ textAlign: 'center', maxWidth: '400px', padding: '20px' }}>
+          <div style={{ fontSize: '32px', marginBottom: '10px' }}>⚠️</div>
           <div style={{ marginBottom: '15px', color: '#c0392b' }}>Errore nel caricamento dati: {loadError}</div>
           <button onClick={loadFromSupabase} style={{ padding: '10px 20px', background: '#3498db', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer' }}>
-            Riprova
+            🔄 Riprova
           </button>
         </div>
       </div>
@@ -447,49 +484,65 @@ export default function App() {
 
   return (
     <div style={{ display: 'flex', height: '100vh', width: '100vw', fontFamily: 'Segoe UI, sans-serif', overflow: 'hidden' }}>
+      
       {/* SIDEBAR */}
       <div style={{ width: '420px', display: 'flex', flexDirection: 'column', borderRight: '1px solid #ddd', background: '#f9f9f9', zIndex: 1000, boxShadow: '2px 0 5px rgba(0,0,0,0.1)' }}>
+        
         {/* Header */}
         <div style={{ padding: '20px', background: '#2c3e50', color: 'white' }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2 style={{ margin: 0, fontSize: '20px' }}>Mappa Locali</h2>
+            <h2 style={{ margin: 0, fontSize: '20px' }}>📍 Mappa Locali</h2>
             <div style={{ display: 'flex', gap: '5px' }}>
+              
               <label title="Carica CSV Grezzo" style={{ background: '#e67e22', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', color: 'white' }}>
-                CSV <input type="file" accept=".csv" onChange={handleCsvUpload} style={{ display: 'none' }} />
+                📂 CSV <input type="file" accept=".csv" onChange={handleCsvUpload} style={{ display: 'none' }} />
               </label>
+
               <label title="Carica JSON Salvato" style={{ background: '#16a085', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', color: 'white' }}>
-                JSON <input type="file" accept=".json" onChange={handleJsonUpload} style={{ display: 'none' }} />
+                📂 JSON <input type="file" accept=".json" onChange={handleJsonUpload} style={{ display: 'none' }} />
               </label>
-              <button title="Geocoding Tool" onClick={() => setView('tool')} style={{ background: '#8e44ad', border: 'none', borderRadius: '4px', cursor: 'pointer', color: 'white', padding: '6px 10px' }}>Geo</button>
-              <button title="Ricarica da Supabase" onClick={loadFromSupabase} style={{ background: '#2980b9', border: 'none', borderRadius: '4px', cursor: 'pointer', color: 'white', padding: '6px 10px' }}>Ricarica</button>
-              <button title="Scarica JSON (backup locale)" onClick={downloadJSON} style={{ background: '#27ae60', border: 'none', borderRadius: '4px', cursor: 'pointer', color: 'white', padding: '6px 10px', fontSize: '16px' }}>Salva</button>
+
+              <button title="Geocoding Tool" onClick={() => setView('tool')} style={{ background: '#8e44ad', border: 'none', borderRadius: '4px', cursor: 'pointer', color: 'white', padding: '6px 10px' }}>🔧</button>
+
+              <button title="Ricarica da Supabase" onClick={loadFromSupabase} style={{ background: '#2980b9', border: 'none', borderRadius: '4px', cursor: 'pointer', color: 'white', padding: '6px 10px' }}>🔄</button>
+              
+              <button title="Scarica JSON (backup locale)" onClick={downloadJSON} style={{ background: '#27ae60', border: 'none', borderRadius: '4px', cursor: 'pointer', color: 'white', padding: '6px 10px', fontSize: '16px' }}>
+                💾
+              </button>
             </div>
           </div>
+
           <div style={{ fontSize: '12px', opacity: 0.8, marginTop: '8px' }}>
-             Visualizzati: <strong>{stats.total}</strong> ({stats.mapped} su mappa){saving && ' - salvataggio...'}
+             Visualizzati: <strong>{stats.total}</strong> ({stats.mapped} su mappa){saving && ' · 💾 salvataggio...'}
           </div>
+
           <div style={{ marginTop: '15px', display: 'flex', gap: '5px' }}>
-            <button onClick={() => setView('dashboard')} style={{ flex: 1, padding: '8px', cursor: 'pointer', borderRadius: '4px', border: 'none', background: view==='dashboard'?'#34495e':'rgba(255,255,255,0.2)', color: 'white', fontSize:'13px' }}>Dati</button>
-            <button onClick={() => setView('list')} style={{ flex: 1, padding: '8px', cursor: 'pointer', borderRadius: '4px', border: 'none', background: view==='list'?'#34495e':'rgba(255,255,255,0.2)', color: 'white', fontSize:'13px' }}>Lista</button>
-            <button onClick={() => setView('filters')} style={{ flex: 1, padding: '8px', cursor: 'pointer', borderRadius: '4px', border: 'none', background: view==='filters'?'#34495e':'rgba(255,255,255,0.2)', color: 'white', fontSize:'13px' }}>Filtri</button>
+            <button onClick={() => setView('dashboard')} style={{ flex: 1, padding: '8px', cursor: 'pointer', borderRadius: '4px', border: 'none', background: view==='dashboard'?'#34495e':'rgba(255,255,255,0.2)', color: 'white', fontSize:'13px' }}>📊 Dati</button>
+            <button onClick={() => setView('list')} style={{ flex: 1, padding: '8px', cursor: 'pointer', borderRadius: '4px', border: 'none', background: view==='list'?'#34495e':'rgba(255,255,255,0.2)', color: 'white', fontSize:'13px' }}>📋 Lista</button>
+            <button onClick={() => setView('filters')} style={{ flex: 1, padding: '8px', cursor: 'pointer', borderRadius: '4px', border: 'none', background: view==='filters'?'#34495e':'rgba(255,255,255,0.2)', color: 'white', fontSize:'13px' }}>🌪️ Filtri</button>
           </div>
         </div>
+
         {/* Content Sidebar */}
         <div style={{ flex: 1, overflowY: 'auto', padding: '15px' }}>
+          
+          {/* 1. DASHBOARD */}
           {view === 'dashboard' && (
             <div style={{ padding: '5px' }}>
               {(filters.regione || filters.provincia || filters.contratto || filters.statoCliente.length > 0) && (
                   <div style={{background: '#ffeaa7', padding: '10px', borderRadius: '6px', marginBottom: '15px', fontSize: '13px', borderLeft: '4px solid #fdcb6e', color: '#d35400'}}>
-                      Stai vedendo statistiche filtrate. <u style={{cursor:'pointer'}} onClick={() => setFilters({regione:"", provincia:"", contratto:"", statoCliente: []})}>Resetta</u>
+                      ⚠️ Stai vedendo statistiche filtrate. <u style={{cursor:'pointer'}} onClick={() => setFilters({regione:"", provincia:"", contratto:"", statoCliente: []})}>Resetta</u>
                   </div>
               )}
+
               <div style={{ background: 'white', padding: '15px', borderRadius: '8px', marginBottom: '15px', borderLeft: '5px solid #3498db', boxShadow: '0 2px 5px rgba(0,0,0,0.05)' }}>
                 <h3 style={{ margin: '0 0 10px 0', color: '#2c3e50' }}>Riepilogo</h3>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Totale:</span><strong>{stats.total}</strong></div>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Geolocalizzati:</span><strong>{stats.mapped}</strong></div>
               </div>
+
               <div style={{ background: 'white', padding: '15px', borderRadius: '8px', marginBottom: '15px', boxShadow: '0 2px 5px rgba(0,0,0,0.05)' }}>
-                <h4 style={{ margin: '0 0 10px 0', borderBottom: '1px solid #eee', paddingBottom: '5px' }}>Contratti</h4>
+                <h4 style={{ margin: '0 0 10px 0', borderBottom: '1px solid #eee', paddingBottom: '5px' }}>📜 Contratti</h4>
                 {stats.byContract.map(([type, count]) => (
                   <div key={type} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px', fontSize: '14px', alignItems: 'center' }}>
                     <div style={{display:'flex', alignItems: 'center', gap: '8px'}}>
@@ -500,8 +553,9 @@ export default function App() {
                   </div>
                 ))}
               </div>
+
               <div style={{ background: 'white', padding: '15px', borderRadius: '8px', marginBottom: '15px', boxShadow: '0 2px 5px rgba(0,0,0,0.05)' }}>
-                <h4 style={{ margin: '0 0 10px 0', borderBottom: '1px solid #eee', paddingBottom: '5px' }}>Top Regioni</h4>
+                <h4 style={{ margin: '0 0 10px 0', borderBottom: '1px solid #eee', paddingBottom: '5px' }}>📍 Top Regioni</h4>
                 {stats.topRegions.slice(0, 10).map(([reg, count]) => (
                   <div key={reg} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px', fontSize: '14px' }}>
                     <span>{reg}</span><strong style={{ color: '#2980b9' }}>{count}</strong>
@@ -510,9 +564,12 @@ export default function App() {
               </div>
             </div>
           )}
+
+          {/* 2. TAB FILTRI */}
           {view === 'filters' && (
              <div style={{ padding: '5px' }}>
                 <h3 style={{marginTop: 0, color: '#2c3e50'}}>Imposta Filtri</h3>
+                
                 <div style={{marginBottom: '15px'}}>
                     <label style={{display:'block', fontWeight: 'bold', marginBottom: '5px', fontSize: '14px'}}>Regione</label>
                     <select value={filters.regione} onChange={(e) => setFilters({...filters, regione: e.target.value, provincia: ""})} style={{width: '100%', padding: '10px', borderRadius: '4px', border: '1px solid #bdc3c7'}}>
@@ -534,6 +591,7 @@ export default function App() {
                         {options.contracts.map(c => <option key={c} value={c}>{c}</option>)}
                     </select>
                 </div>
+
                 <div style={{marginBottom: '20px'}}>
                     <label style={{display:'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 'bold', marginBottom: '8px', fontSize: '14px'}}>
                         <span>Stato Cliente</span>
@@ -561,48 +619,68 @@ export default function App() {
                     <div style={{fontSize: '11px', color: '#999', marginTop: '4px'}}>
                         {filters.statoCliente.length === 0
                             ? 'Nessuno selezionato = mostra tutti gli stati'
-                            : `${filters.statoCliente.length} stati selezionati`}
+                            : `${filters.statoCliente.length} stat${filters.statoCliente.length === 1 ? 'o' : 'i'} selezionat${filters.statoCliente.length === 1 ? 'o' : 'i'}`}
                     </div>
                 </div>
-                <button onClick={() => setFilters({ regione: "", provincia: "", contratto: "", statoCliente: [] })} style={{width: '100%', padding: '12px', background: '#e74c3c', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold'}}>Resetta Filtri</button>
+
+                <button onClick={() => setFilters({ regione: "", provincia: "", contratto: "", statoCliente: [] })} style={{width: '100%', padding: '12px', background: '#e74c3c', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold'}}>❌ Resetta Filtri</button>
              </div>
           )}
+
+          {/* 3. LISTA CON MODIFICA INLINE */}
           {view === 'list' && (
             <>
               <input type="text" placeholder="Cerca..." onChange={(e) => setSearch(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px', borderRadius: '4px', border: '1px solid #ddd', boxSizing: 'border-box' }} />
+              
               {filteredData.map((r) => {
                 const hasCoords = r.lat && r.lng;
                 const isSelected = selectedId === r.id;
                 const isEditing = editingId === r.id;
                 const pinColor = getMarkerColor(r.tipoContratto);
+
                 if (isEditing) {
                     return (
                         <div key={r.id} style={{ background: '#fff3cd', padding: '10px', marginBottom: '8px', borderRadius: '6px', border: '1px solid #f1c40f' }}>
                             <input value={editForm.nomeRistorante} onChange={e => handleEditChange('nomeRistorante', e.target.value)} placeholder="Nome" style={{width: '100%', marginBottom: '5px', padding: '5px'}} />
                             <input value={editForm.indirizzo} onChange={e => handleEditChange('indirizzo', e.target.value)} placeholder="Indirizzo" style={{width: '100%', marginBottom: '5px', padding: '5px'}} />
+                            
                             <div style={{display:'flex', gap: '5px', marginBottom: '5px'}}>
-                                <input value={editForm.citta} onChange={e => handleEditChange('citta', e.target.value)} placeholder="Citta" style={{flex: 2, padding: '5px'}} />
+                                <input value={editForm.citta} onChange={e => handleEditChange('citta', e.target.value)} placeholder="Città" style={{flex: 2, padding: '5px'}} />
                                 <input value={editForm.provincia} onChange={e => handleEditChange('provincia', e.target.value)} placeholder="Prov" style={{width: '50px', padding: '5px'}} />
                                 <input value={editForm.regione} onChange={e => handleEditChange('regione', e.target.value)} placeholder="Regione" style={{flex: 1, padding: '5px'}} />
-                            </div>
-                            <input value={editForm.tipoContratto} onChange={e => handleEditChange('tipoContratto', e.target.value)} placeholder="Contratto" style={{width: '100%', marginBottom: '10px', padding: '5px'}} />
-                            <div style={{display:'flex', gap: '5px'}}>
-                                <button onClick={saveEditing} style={{flex: 1, background: '#27ae60', color: 'white', border: 'none', padding: '5px', cursor: 'pointer', borderRadius: '3px'}}>Salva</button>
-                                <button onClick={cancelEditing} style={{flex: 1, background: '#e74c3c', color: 'white', border: 'none', padding: '5px', cursor: 'pointer', borderRadius: '3px'}}>Annulla</button>
-                            </div>
                         </div>
+
+                        <input value={editForm.tipoContratto} onChange={e => handleEditChange('tipoContratto', e.target.value)} placeholder="Contratto" style={{width: '100%', marginBottom: '10px', padding: '5px'}} />
+                        
+                        <div style={{display:'flex', gap: '5px'}}>
+                            <button onClick={saveEditing} style={{flex: 1, background: '#27ae60', color: 'white', border: 'none', padding: '5px', cursor: 'pointer', borderRadius: '3px'}}>✅ Salva</button>
+                            <button onClick={cancelEditing} style={{flex: 1, background: '#e74c3c', color: 'white', border: 'none', padding: '5px', cursor: 'pointer', borderRadius: '3px'}}>❌ Annulla</button>
+                        </div>
+                    </div>
                     );
                 }
+
                 return (
-                  <div key={r.id} onClick={() => handleRowClick(r)} style={{ background: isSelected ? '#e3f2fd' : 'white', padding: '12px', marginBottom: '8px', borderRadius: '6px', cursor: 'pointer', borderLeft: `5px solid ${pinColor}`, border: isSelected ? '1px solid #2196f3' : '1px solid transparent', boxShadow: '0 1px 2px rgba(0,0,0,0.05)', position: 'relative' }}>
-                    <div onClick={(e) => startEditing(e, r)} title="Modifica Dati" style={{position: 'absolute', top: '10px', right: '10px', fontSize: '16px', cursor: 'pointer', opacity: 0.6}}>Edit</div>
+                  <div 
+                    key={r.id} 
+                    onClick={() => handleRowClick(r)} 
+                    style={{ 
+                      background: isSelected ? '#e3f2fd' : 'white', 
+                      padding: '12px', marginBottom: '8px', borderRadius: '6px', cursor: 'pointer', 
+                      borderLeft: `5px solid ${pinColor}`, 
+                      border: isSelected ? '1px solid #2196f3' : '1px solid transparent',
+                      boxShadow: '0 1px 2px rgba(0,0,0,0.05)',
+                      position: 'relative'
+                    }}
+                  >
+                    <div onClick={(e) => startEditing(e, r)} title="Modifica Dati" style={{position: 'absolute', top: '10px', right: '10px', fontSize: '16px', cursor: 'pointer', opacity: 0.6}}>✏️</div>
                     <div style={{ fontWeight: 'bold', color: '#2c3e50', paddingRight: '20px' }}>{r.nomeRistorante}</div>
-                    <div style={{ fontSize: '12px', color: '#e67e22', fontWeight: '600' }}>{r.indirizzo}</div>
+                    <div style={{ fontSize: '12px', color: '#e67e22', fontWeight: '600' }}>📍 {r.indirizzo}</div>
                     <div style={{ fontSize: '12px', color: '#888' }}>{r.citta} ({r.provincia}) - {r.regione}</div>
-                    <div style={{ fontSize: '11px', color: pinColor, marginTop: '3px', fontWeight: 'bold' }}>{r.tipoContratto} {r.statoCliente ? `- ${r.statoCliente}` : ''}</div>
+                    <div style={{ fontSize: '11px', color: pinColor, marginTop: '3px', fontWeight: 'bold' }}>{r.tipoContratto} {r.statoCliente ? `· ${r.statoCliente}` : ''}</div>
                     {isSelected && !hasCoords && (
                       <button onClick={(e) => openGoogleMaps(e, r)} style={{ marginTop: '10px', width: '100%', padding: '8px', background: 'white', border: '1px solid #ddd', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}>
-                        Vedi su Google Maps
+                        🗺️ Vedi su Google Maps
                       </button>
                     )}
                   </div>
@@ -612,23 +690,26 @@ export default function App() {
           )}
         </div>
       </div>
+
       {/* MAPPA */}
       <div style={{ flex: 1, position: 'relative' }}>
         <MapContainer style={{ height: '100%', width: '100%' }}>
-          <TileLayer url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png" attribution="OpenStreetMap" />
+          <TileLayer url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png" attribution='© OpenStreetMap' />
           <MapUpdater center={mapCenter} bounds={mapBounds} />
-          {filteredData.map((r, i) => (
-            r.lat && r.lng ? (
-              <Marker key={r.id} position={[parseFloat(r.lat), parseFloat(r.lng)]} icon={createCustomIcon(r.tipoContratto)}>
-                <Popup>
-                  <strong>{r.nomeRistorante}</strong><br/>
-                  {r.indirizzo}<br/>
-                  {r.citta} ({r.provincia})<br/>
-                  <span style={{color: getMarkerColor(r.tipoContratto), fontWeight: 'bold'}}>{r.tipoContratto}</span>
-                </Popup>
-              </Marker>
-            ) : null
-          ))}
+          <MarkerClusterGroup chunkedLoading maxClusterRadius={60} spiderfyOnMaxZoom={true}>
+            {filteredData.map((r, i) => (
+              r.lat && r.lng ? (
+                <Marker key={r.id} position={[parseFloat(r.lat), parseFloat(r.lng)]} icon={createCustomIcon(r.tipoContratto)}>
+                  <Popup>
+                    <strong>{r.nomeRistorante}</strong><br/>
+                    {r.indirizzo}<br/>
+                    {r.citta} ({r.provincia})<br/>
+                    <span style={{color: getMarkerColor(r.tipoContratto), fontWeight: 'bold'}}>{r.tipoContratto}</span>
+          </Popup>
+                </Marker>
+              ) : null
+            ))}
+          </MarkerClusterGroup>
         </MapContainer>
       </div>
     </div>
