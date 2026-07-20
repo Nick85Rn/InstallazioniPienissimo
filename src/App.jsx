@@ -405,7 +405,7 @@ export default function App() {
 
   useEffect(() => {
       if (filteredData.length > 0) fitMapToData(filteredData);
-  }, [filters]); 
+  }, [filters, data]);
 
   const handleRowClick = (r) => {
     if (editingId === r.id) return;
@@ -599,7 +599,7 @@ export default function App() {
                             <span onClick={() => setFilters({...filters, statoCliente: []})} style={{fontWeight: 'normal', fontSize: '12px', color: '#2980b9', cursor: 'pointer'}}>
                                 Seleziona tutti
                             </span>
-                        )}
+                    )}
                     </label>
                     <div style={{background: 'white', border: '1px solid #bdc3c7', borderRadius: '4px', padding: '8px', maxHeight: '220px', overflowY: 'auto'}}>
                         {options.statiCliente.length === 0 && (
@@ -643,11 +643,11 @@ export default function App() {
                         <div key={r.id} style={{ background: '#fff3cd', padding: '10px', marginBottom: '8px', borderRadius: '6px', border: '1px solid #f1c40f' }}>
                             <input value={editForm.nomeRistorante} onChange={e => handleEditChange('nomeRistorante', e.target.value)} placeholder="Nome" style={{width: '100%', marginBottom: '5px', padding: '5px'}} />
                             <input value={editForm.indirizzo} onChange={e => handleEditChange('indirizzo', e.target.value)} placeholder="Indirizzo" style={{width: '100%', marginBottom: '5px', padding: '5px'}} />
-                            
-                            <div style={{display:'flex', gap: '5px', marginBottom: '5px'}}>
-                                <input value={editForm.citta} onChange={e => handleEditChange('citta', e.target.value)} placeholder="Città" style={{flex: 2, padding: '5px'}} />
-                                <input value={editForm.provincia} onChange={e => handleEditChange('provincia', e.target.value)} placeholder="Prov" style={{width: '50px', padding: '5px'}} />
-                                <input value={editForm.regione} onChange={e => handleEditChange('regione', e.target.value)} placeholder="Regione" style={{flex: 1, padding: '5px'}} />
+                        
+                        <div style={{display:'flex', gap: '5px', marginBottom: '5px'}}>
+                            <input value={editForm.citta} onChange={e => handleEditChange('citta', e.target.value)} placeholder="Città" style={{flex: 2, padding: '5px'}} />
+                            <input value={editForm.provincia} onChange={e => handleEditChange('provincia', e.target.value)} placeholder="Prov" style={{width: '50px', padding: '5px'}} />
+                            <input value={editForm.regione} onChange={e => handleEditChange('regione', e.target.value)} placeholder="Regione" style={{flex: 1, padding: '5px'}} />
                         </div>
 
                         <input value={editForm.tipoContratto} onChange={e => handleEditChange('tipoContratto', e.target.value)} placeholder="Contratto" style={{width: '100%', marginBottom: '10px', padding: '5px'}} />
@@ -693,7 +693,7 @@ export default function App() {
 
       {/* MAPPA */}
       <div style={{ flex: 1, position: 'relative' }}>
-        <MapContainer style={{ height: '100%', width: '100%' }}>
+        <MapContainer center={[42.5, 12.5]} zoom={6} style={{ height: '100%', width: '100%' }}>
           <TileLayer url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png" attribution='© OpenStreetMap' />
           <MapUpdater center={mapCenter} bounds={mapBounds} />
           <MarkerClusterGroup chunkedLoading maxClusterRadius={60} spiderfyOnMaxZoom={true}>
@@ -705,7 +705,7 @@ export default function App() {
                     {r.indirizzo}<br/>
                     {r.citta} ({r.provincia})<br/>
                     <span style={{color: getMarkerColor(r.tipoContratto), fontWeight: 'bold'}}>{r.tipoContratto}</span>
-          </Popup>
+                  </Popup>
                 </Marker>
               ) : null
             ))}
