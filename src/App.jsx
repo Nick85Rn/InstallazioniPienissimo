@@ -89,6 +89,18 @@ export default function App() {
   const [mapBounds, setMapBounds] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
 
+  // --- STATO RESPONSIVE ---
+  // Sotto i 768px, sidebar e mappa non stanno più fianco a fianco (non c'è spazio):
+  // si alternano a schermo intero, con un pulsante per passare dall'una all'altra.
+  const [isMobile, setIsMobile] = useState(() => typeof window !== 'undefined' && window.innerWidth < 768);
+  const [mobileView, setMobileView] = useState('panel'); // 'panel' | 'map'
+
+  useEffect(() => {
+    const onResize = () => setIsMobile(window.innerWidth < 768);
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, []);
+
   // --- STATO PER EDITING ---
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({});
@@ -103,202 +115,6 @@ export default function App() {
     statoCliente: []
   });
 
-  // --- NORMALIZZAZIONE DATI ---
-  // Due formati in ingresso:
-  // 1) righe da Supabase (zoho_raw_locali): snake_case, zoho_locale_id come id
-  // 2) righe da CSV/JSON caricati a mano (vecchio formato ristoranti.json): camelCase
-  // normalizeData li fa convergere sullo stesso shape interno usato dal resto dell'app.
-  const normalizeData = (rawData) => {
-      return rawData.map((r, index) => {
-        const isSupabaseRow = r.zoho_locale_id !== undefined;
-
-        let rawProv = isSupabaseRow ? r.provincia : (r.provincia || r.PROVINCIA || "");
-        let prov = cleanProvincia(rawProv);
-        let reg = isSupabaseRow ? null : (r.regione || r.REGIONE);
-        if (!reg) reg = PROVINCE_TO_REGION[prov] || "N.D.";
-
-        if (isSupabaseRow) {
-          return {
-            id: r.zoho_locale_id,
-            zohoLocaleId: r.zoho_locale_id,
-            zohoAccountId: r.zoho_account_id,
-            partitaIva: r.partita_iva,
-            ragioneSociale: r.ragione_sociale,
-            nomeRistorante: r.nome_locale || "Sconosciuto",
-            tipoCliente: r.tipo_cliente,
-            tipoContratto: r.tipo_licenza || "Standard",
-            statoCliente: r.stato_cliente || "(vuoto)",
-            attivo: r.attivo,
-            indirizzo: r.indirizzo || "",
-            citta: r.citta || "",
-            provincia: prov,
-            regione: reg,
-            cap: r.cap,
-            indirizzoFonte: r.indirizzo_fonte,
-            lat: r.lat != null ? String(r.lat) : null,
-            lng: r.lng != null ? String(r.lng) : null,
-          };
-        }
-
-        // Fallback: import manuale CSV/JSON in formato "vecchio"
-        const uniqueId = `${r.partitaIva || 'no_piva'}_${index}`;
-        return {
-            ...r,
-            id: r.id || uniqueId,
-            partitaIva: r.partitaIva,
-            provincia: prov,
-            regione: reg,
-            lat: r.lat ? String(r.lat).replace(',', '.') : null,
-            lng: r.lng ? String(r.lng).replace(',', '.') : null,
-            tipoContratto: r.tipoContratto || r.TIPOCONTRATTO || "Standard",
-            statoCliente: r.statoCliente || "(vuoto)",
-            citta: r.citta || r.CITTA || "",
-            indirizzo: r.indirizzo || r.INDIRIZZO || "",
-            nomeRistorante: r.nomeRistorante || r.NOME || "Sconosciuto"
-        };
-      });
-  };
-
-  // --- CARICAMENTO DA SUPABASE (zoho_raw_locali) ---
-  // Paginato con .range(): Supabase limita le righe per richiesta (default 1000),
-  // e la tabella contiene ~6000 record.
-  const loadFromSupabase = async () => {
-    setLoading(true);
-    setLoadError(null);
-    try {
-      const pageSize = 1000;
-      let from = 0;
-      let all = [];
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const { data: page, error } = await supabase
-          .from(LOCALI_TABLE)
-          .select('*')
-          .range(from, from + pageSize - 1);
-
-        if (error) throw error;
-        if (!page || page.length === 0) break;
-
-        all = all.concat(page);
-        if (page.length < pageSize) break;
-        from += pageSize;
-      }
-
-      setData(normalizeData(all));
-    } catch (err) {
-      console.error('Errore caricamento da Supabase:', err);
-      setLoadError(err.message || 'Errore sconosciuto nel caricamento dati.');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    loadFromSupabase();
-  }, []);
-
-  // --- GESTIONE MODIFICA ---
-  const handleEditChange = (field, value) => {
-      setEditForm(prev => {
-          const newData = { ...prev, [field]: value };
-          if (field === 'provincia') {
-             const clean = cleanProvincia(value);
-             const autoReg = PROVINCE_TO_REGION[clean];
-             if (autoReg) {
-                 newData.regione = autoReg;
-             }
-          }
-          return newData;
-      });
-  };
-
-  const startEditing = (e, r) => {
-      e.stopPropagation();
-      setEditingId(r.id);
-      setEditForm({ ...r });
-  };
-
-  const cancelEditing = () => {
-      setEditingId(null);
-      setEditForm({});
-  };
-
-  const saveEditing = async () => {
-      const prov = cleanProvincia(editForm.provincia);
-      const reg = editForm.regione || PROVINCE_TO_REGION[prov] || "N.D.";
-      const editedItem = data.find(item => item.id === editingId);
-
-      const updatedData = data.map(item => {
-          if (item.id === editingId) {
-              return { ...item, ...editForm, provincia: prov, regione: reg };
-          }
-          return item;
-      });
-      setData(updatedData);
-      setEditingId(null);
-
-      // Se il record viene da Supabase (ha uno zohoLocaleId), persistiamo la modifica.
-      // indirizzo_fonte='manuale' impedisce alle sync successive di sovrascrivere
-      // questa correzione con quanto trovato su Zoho CRM.
-      if (editedItem && editedItem.zohoLocaleId) {
-          setSaving(true);
-          try {
-              const { error } = await supabase
-                  .from(LOCALI_TABLE)
-                  .update({
-                      nome_locale: editForm.nomeRistorante,
-                      indirizzo: editForm.indirizzo,
-                      citta: editForm.citta,
-                      provincia: prov,
-                      tipo_licenza: editForm.tipoContratto,
-                      indirizzo_fonte: 'manuale',
-                  })
-                  .eq('zoho_locale_id', editedItem.zohoLocaleId);
-              if (error) throw error;
-          } catch (err) {
-              console.error('Errore salvataggio su Supabase:', err);
-              alert('⚠️ Modifica salvata solo localmente: errore di sincronizzazione con Supabase.\n' + err.message);
-          } finally {
-              setSaving(false);
-          }
-      }
-  };
-
-  // --- DOWNLOAD JSON (CON DATA E ORA) ---
-  const downloadJSON = () => {
-    const jsonString = JSON.stringify(data, null, 2);
-    const blob = new Blob([jsonString], { type: "application/json" });
-    const href = URL.createObjectURL(blob);
-    
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const hours = String(now.getHours()).padStart(2, '0');
-    const minutes = String(now.getMinutes()).padStart(2, '0');
-    
-    const fileName = `ristoranti_${year}-${month}-${day}_${hours}-${minutes}.json`;
-
-    const link = document.createElement('a');
-    link.href = href;
-    link.download = fileName;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-  };
-
-  // --- UPLOAD CSV ---
-  const handleCsvUpload = (e) => {
-    const file = e.target.files[0];
-    if (file) {
-      Papa.parse(file, {
-        header: true, skipEmptyLines: true, delimiter: ";",
-        complete: (res) => {
-          const clean = normalizeData(res.data);
-          setData(clean);
-          fitMapToData(clean);
-          alert(`Caricati ${clean.length} ristoranti da CSV!`);
-        }
       });
     }
   };
@@ -414,7 +230,7 @@ export default function App() {
     if (r.lat && r.lng) {
       setMapBounds(null); 
       setMapCenter([parseFloat(r.lat), parseFloat(r.lng)]); 
-      if (window.innerWidth < 768) setView('list'); 
+      if (isMobile) setMobileView('map'); 
     } 
   };
 
@@ -483,30 +299,40 @@ export default function App() {
   }
 
   return (
-    <div style={{ display: 'flex', height: '100vh', width: '100vw', fontFamily: 'Segoe UI, sans-serif', overflow: 'hidden' }}>
+    <div style={{ display: 'flex', height: '100dvh', width: '100vw', fontFamily: 'Segoe UI, sans-serif', overflow: 'hidden' }}>
       
       {/* SIDEBAR */}
-      <div style={{ width: '420px', display: 'flex', flexDirection: 'column', borderRight: '1px solid #ddd', background: '#f9f9f9', zIndex: 1000, boxShadow: '2px 0 5px rgba(0,0,0,0.1)' }}>
+      <div style={{ 
+        width: isMobile ? '100%' : '420px', 
+        display: (isMobile && mobileView === 'map') ? 'none' : 'flex', 
+        flexDirection: 'column', 
+        borderRight: isMobile ? 'none' : '1px solid #ddd', 
+        background: '#f9f9f9', 
+        zIndex: 1000, 
+        boxShadow: isMobile ? 'none' : '2px 0 5px rgba(0,0,0,0.1)',
+        height: '100%',
+        overflow: 'hidden'
+      }}>
         
         {/* Header */}
-        <div style={{ padding: '20px', background: '#2c3e50', color: 'white' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-            <h2 style={{ margin: 0, fontSize: '20px' }}>📍 Mappa Locali</h2>
-            <div style={{ display: 'flex', gap: '5px' }}>
+        <div style={{ padding: isMobile ? '12px 15px' : '20px', background: '#2c3e50', color: 'white' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+            <h2 style={{ margin: 0, fontSize: isMobile ? '17px' : '20px' }}>📍 Mappa Locali</h2>
+            <div style={{ display: 'flex', gap: '5px', flexWrap: 'wrap' }}>
               
-              <label title="Carica CSV Grezzo" style={{ background: '#e67e22', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', color: 'white' }}>
-                📂 CSV <input type="file" accept=".csv" onChange={handleCsvUpload} style={{ display: 'none' }} />
+              <label title="Carica CSV Grezzo" style={{ background: '#e67e22', padding: isMobile ? '6px 8px' : '6px 10px', borderRadius: '4px', cursor: 'pointer', color: 'white', fontSize: isMobile ? '13px' : '14px' }}>
+                📂{!isMobile && ' CSV'} <input type="file" accept=".csv" onChange={handleCsvUpload} style={{ display: 'none' }} />
               </label>
 
-              <label title="Carica JSON Salvato" style={{ background: '#16a085', padding: '6px 10px', borderRadius: '4px', cursor: 'pointer', color: 'white' }}>
-                📂 JSON <input type="file" accept=".json" onChange={handleJsonUpload} style={{ display: 'none' }} />
+              <label title="Carica JSON Salvato" style={{ background: '#16a085', padding: isMobile ? '6px 8px' : '6px 10px', borderRadius: '4px', cursor: 'pointer', color: 'white', fontSize: isMobile ? '13px' : '14px' }}>
+                📂{!isMobile && ' JSON'} <input type="file" accept=".json" onChange={handleJsonUpload} style={{ display: 'none' }} />
               </label>
 
-              <button title="Geocoding Tool" onClick={() => setView('tool')} style={{ background: '#8e44ad', border: 'none', borderRadius: '4px', cursor: 'pointer', color: 'white', padding: '6px 10px' }}>🔧</button>
+              <button title="Geocoding Tool" onClick={() => setView('tool')} style={{ background: '#8e44ad', border: 'none', borderRadius: '4px', cursor: 'pointer', color: 'white', padding: isMobile ? '6px 8px' : '6px 10px' }}>🔧</button>
 
-              <button title="Ricarica da Supabase" onClick={loadFromSupabase} style={{ background: '#2980b9', border: 'none', borderRadius: '4px', cursor: 'pointer', color: 'white', padding: '6px 10px' }}>🔄</button>
+              <button title="Ricarica da Supabase" onClick={loadFromSupabase} style={{ background: '#2980b9', border: 'none', borderRadius: '4px', cursor: 'pointer', color: 'white', padding: isMobile ? '6px 8px' : '6px 10px' }}>🔄</button>
               
-              <button title="Scarica JSON (backup locale)" onClick={downloadJSON} style={{ background: '#27ae60', border: 'none', borderRadius: '4px', cursor: 'pointer', color: 'white', padding: '6px 10px', fontSize: '16px' }}>
+              <button title="Scarica JSON (backup locale)" onClick={downloadJSON} style={{ background: '#27ae60', border: 'none', borderRadius: '4px', cursor: 'pointer', color: 'white', padding: isMobile ? '6px 8px' : '6px 10px', fontSize: '16px' }}>
                 💾
               </button>
             </div>
@@ -599,7 +425,7 @@ export default function App() {
                             <span onClick={() => setFilters({...filters, statoCliente: []})} style={{fontWeight: 'normal', fontSize: '12px', color: '#2980b9', cursor: 'pointer'}}>
                                 Seleziona tutti
                             </span>
-                    )}
+                        )}
                     </label>
                     <div style={{background: 'white', border: '1px solid #bdc3c7', borderRadius: '4px', padding: '8px', maxHeight: '220px', overflowY: 'auto'}}>
                         {options.statiCliente.length === 0 && (
@@ -643,20 +469,20 @@ export default function App() {
                         <div key={r.id} style={{ background: '#fff3cd', padding: '10px', marginBottom: '8px', borderRadius: '6px', border: '1px solid #f1c40f' }}>
                             <input value={editForm.nomeRistorante} onChange={e => handleEditChange('nomeRistorante', e.target.value)} placeholder="Nome" style={{width: '100%', marginBottom: '5px', padding: '5px'}} />
                             <input value={editForm.indirizzo} onChange={e => handleEditChange('indirizzo', e.target.value)} placeholder="Indirizzo" style={{width: '100%', marginBottom: '5px', padding: '5px'}} />
-                        
-                        <div style={{display:'flex', gap: '5px', marginBottom: '5px'}}>
-                            <input value={editForm.citta} onChange={e => handleEditChange('citta', e.target.value)} placeholder="Città" style={{flex: 2, padding: '5px'}} />
-                            <input value={editForm.provincia} onChange={e => handleEditChange('provincia', e.target.value)} placeholder="Prov" style={{width: '50px', padding: '5px'}} />
-                            <input value={editForm.regione} onChange={e => handleEditChange('regione', e.target.value)} placeholder="Regione" style={{flex: 1, padding: '5px'}} />
-                        </div>
+                            
+                            <div style={{display:'flex', gap: '5px', marginBottom: '5px'}}>
+                                <input value={editForm.citta} onChange={e => handleEditChange('citta', e.target.value)} placeholder="Città" style={{flex: 2, padding: '5px'}} />
+                                <input value={editForm.provincia} onChange={e => handleEditChange('provincia', e.target.value)} placeholder="Prov" style={{width: '50px', padding: '5px'}} />
+                                <input value={editForm.regione} onChange={e => handleEditChange('regione', e.target.value)} placeholder="Regione" style={{flex: 1, padding: '5px'}} />
+                            </div>
 
-                        <input value={editForm.tipoContratto} onChange={e => handleEditChange('tipoContratto', e.target.value)} placeholder="Contratto" style={{width: '100%', marginBottom: '10px', padding: '5px'}} />
-                        
-                        <div style={{display:'flex', gap: '5px'}}>
-                            <button onClick={saveEditing} style={{flex: 1, background: '#27ae60', color: 'white', border: 'none', padding: '5px', cursor: 'pointer', borderRadius: '3px'}}>✅ Salva</button>
-                            <button onClick={cancelEditing} style={{flex: 1, background: '#e74c3c', color: 'white', border: 'none', padding: '5px', cursor: 'pointer', borderRadius: '3px'}}>❌ Annulla</button>
+                            <input value={editForm.tipoContratto} onChange={e => handleEditChange('tipoContratto', e.target.value)} placeholder="Contratto" style={{width: '100%', marginBottom: '10px', padding: '5px'}} />
+                            
+                            <div style={{display:'flex', gap: '5px'}}>
+                                <button onClick={saveEditing} style={{flex: 1, background: '#27ae60', color: 'white', border: 'none', padding: '5px', cursor: 'pointer', borderRadius: '3px'}}>✅ Salva</button>
+                                <button onClick={cancelEditing} style={{flex: 1, background: '#e74c3c', color: 'white', border: 'none', padding: '5px', cursor: 'pointer', borderRadius: '3px'}}>❌ Annulla</button>
+                            </div>
                         </div>
-                    </div>
                     );
                 }
 
@@ -692,7 +518,26 @@ export default function App() {
       </div>
 
       {/* MAPPA */}
-      <div style={{ flex: 1, position: 'relative' }}>
+      <div style={{ 
+        flex: 1, 
+        position: 'relative', 
+        display: (isMobile && mobileView === 'panel') ? 'none' : 'block',
+        width: isMobile ? '100%' : 'auto'
+      }}>
+        {isMobile && (
+          <button 
+            onClick={() => setMobileView('panel')} 
+            style={{ 
+              position: 'absolute', top: '12px', left: '12px', zIndex: 1000, 
+              padding: '10px 16px', background: '#2c3e50', color: 'white', 
+              border: 'none', borderRadius: '20px', cursor: 'pointer', 
+              fontSize: '14px', fontWeight: 'bold', boxShadow: '0 2px 6px rgba(0,0,0,0.3)',
+              display: 'flex', alignItems: 'center', gap: '6px'
+            }}
+          >
+            ☰ Lista
+          </button>
+        )}
         <MapContainer center={[42.5, 12.5]} zoom={6} style={{ height: '100%', width: '100%' }}>
           <TileLayer url="https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png" attribution='© OpenStreetMap' />
           <MapUpdater center={mapCenter} bounds={mapBounds} />
@@ -712,6 +557,21 @@ export default function App() {
           </MarkerClusterGroup>
         </MapContainer>
       </div>
+
+      {isMobile && mobileView === 'panel' && (
+        <button 
+          onClick={() => setMobileView('map')} 
+          style={{ 
+            position: 'fixed', bottom: '20px', right: '20px', zIndex: 2000, 
+            padding: '14px 20px', background: '#3498db', color: 'white', 
+            border: 'none', borderRadius: '24px', cursor: 'pointer', 
+            fontSize: '14px', fontWeight: 'bold', boxShadow: '0 3px 10px rgba(0,0,0,0.35)',
+            display: 'flex', alignItems: 'center', gap: '6px'
+          }}
+        >
+          🗺️ Mappa {stats.mapped > 0 ? `(${stats.mapped})` : ''}
+        </button>
+      )}
     </div>
   );
 }
