@@ -115,6 +115,202 @@ export default function App() {
     statoCliente: []
   });
 
+  // --- NORMALIZZAZIONE DATI ---
+  // Due formati in ingresso:
+  // 1) righe da Supabase (zoho_raw_locali): snake_case, zoho_locale_id come id
+  // 2) righe da CSV/JSON caricati a mano (vecchio formato ristoranti.json): camelCase
+  // normalizeData li fa convergere sullo stesso shape interno usato dal resto dell'app.
+  const normalizeData = (rawData) => {
+      return rawData.map((r, index) => {
+        const isSupabaseRow = r.zoho_locale_id !== undefined;
+
+        let rawProv = isSupabaseRow ? r.provincia : (r.provincia || r.PROVINCIA || "");
+        let prov = cleanProvincia(rawProv);
+        let reg = isSupabaseRow ? null : (r.regione || r.REGIONE);
+        if (!reg) reg = PROVINCE_TO_REGION[prov] || "N.D.";
+
+        if (isSupabaseRow) {
+          return {
+            id: r.zoho_locale_id,
+            zohoLocaleId: r.zoho_locale_id,
+            zohoAccountId: r.zoho_account_id,
+            partitaIva: r.partita_iva,
+            ragioneSociale: r.ragione_sociale,
+            nomeRistorante: r.nome_locale || "Sconosciuto",
+            tipoCliente: r.tipo_cliente,
+            tipoContratto: r.tipo_licenza || "Standard",
+            statoCliente: r.stato_cliente || "(vuoto)",
+            attivo: r.attivo,
+            indirizzo: r.indirizzo || "",
+            citta: r.citta || "",
+            provincia: prov,
+            regione: reg,
+            cap: r.cap,
+            indirizzoFonte: r.indirizzo_fonte,
+            lat: r.lat != null ? String(r.lat) : null,
+            lng: r.lng != null ? String(r.lng) : null,
+          };
+        }
+
+        // Fallback: import manuale CSV/JSON in formato "vecchio"
+        const uniqueId = `${r.partitaIva || 'no_piva'}_${index}`;
+        return {
+            ...r,
+            id: r.id || uniqueId,
+            partitaIva: r.partitaIva,
+            provincia: prov,
+            regione: reg,
+            lat: r.lat ? String(r.lat).replace(',', '.') : null,
+            lng: r.lng ? String(r.lng).replace(',', '.') : null,
+            tipoContratto: r.tipoContratto || r.TIPOCONTRATTO || "Standard",
+            statoCliente: r.statoCliente || "(vuoto)",
+            citta: r.citta || r.CITTA || "",
+            indirizzo: r.indirizzo || r.INDIRIZZO || "",
+            nomeRistorante: r.nomeRistorante || r.NOME || "Sconosciuto"
+        };
+      });
+  };
+
+  // --- CARICAMENTO DA SUPABASE (zoho_raw_locali) ---
+  // Paginato con .range(): Supabase limita le righe per richiesta (default 1000),
+  // e la tabella contiene ~6000 record.
+  const loadFromSupabase = async () => {
+    setLoading(true);
+    setLoadError(null);
+    try {
+      const pageSize = 1000;
+      let from = 0;
+      let all = [];
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const { data: page, error } = await supabase
+          .from(LOCALI_TABLE)
+          .select('*')
+          .range(from, from + pageSize - 1);
+
+        if (error) throw error;
+        if (!page || page.length === 0) break;
+
+        all = all.concat(page);
+        if (page.length < pageSize) break;
+        from += pageSize;
+      }
+
+      setData(normalizeData(all));
+    } catch (err) {
+      console.error('Errore caricamento da Supabase:', err);
+      setLoadError(err.message || 'Errore sconosciuto nel caricamento dati.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadFromSupabase();
+  }, []);
+
+  // --- GESTIONE MODIFICA ---
+  const handleEditChange = (field, value) => {
+      setEditForm(prev => {
+          const newData = { ...prev, [field]: value };
+          if (field === 'provincia') {
+             const clean = cleanProvincia(value);
+             const autoReg = PROVINCE_TO_REGION[clean];
+             if (autoReg) {
+                 newData.regione = autoReg;
+             }
+          }
+          return newData;
+      });
+  };
+
+  const startEditing = (e, r) => {
+      e.stopPropagation();
+      setEditingId(r.id);
+      setEditForm({ ...r });
+  };
+
+  const cancelEditing = () => {
+      setEditingId(null);
+      setEditForm({});
+  };
+
+  const saveEditing = async () => {
+      const prov = cleanProvincia(editForm.provincia);
+      const reg = editForm.regione || PROVINCE_TO_REGION[prov] || "N.D.";
+      const editedItem = data.find(item => item.id === editingId);
+
+      const updatedData = data.map(item => {
+          if (item.id === editingId) {
+              return { ...item, ...editForm, provincia: prov, regione: reg };
+          }
+          return item;
+      });
+      setData(updatedData);
+      setEditingId(null);
+
+      // Se il record viene da Supabase (ha uno zohoLocaleId), persistiamo la modifica.
+      // indirizzo_fonte='manuale' impedisce alle sync successive di sovrascrivere
+      // questa correzione con quanto trovato su Zoho CRM.
+      if (editedItem && editedItem.zohoLocaleId) {
+          setSaving(true);
+          try {
+              const { error } = await supabase
+                  .from(LOCALI_TABLE)
+                  .update({
+                      nome_locale: editForm.nomeRistorante,
+                      indirizzo: editForm.indirizzo,
+                      citta: editForm.citta,
+                      provincia: prov,
+                      tipo_licenza: editForm.tipoContratto,
+                      indirizzo_fonte: 'manuale',
+                  })
+                  .eq('zoho_locale_id', editedItem.zohoLocaleId);
+              if (error) throw error;
+          } catch (err) {
+              console.error('Errore salvataggio su Supabase:', err);
+              alert('⚠️ Modifica salvata solo localmente: errore di sincronizzazione con Supabase.\n' + err.message);
+          } finally {
+              setSaving(false);
+          }
+      }
+  };
+
+  // --- DOWNLOAD JSON (CON DATA E ORA) ---
+  const downloadJSON = () => {
+    const jsonString = JSON.stringify(data, null, 2);
+    const blob = new Blob([jsonString], { type: "application/json" });
+    const href = URL.createObjectURL(blob);
+    
+    const now = new Date();
+    const year = now.getFullYear();
+    const month = String(now.getMonth() + 1).padStart(2, '0');
+    const day = String(now.getDate()).padStart(2, '0');
+    const hours = String(now.getHours()).padStart(2, '0');
+    const minutes = String(now.getMinutes()).padStart(2, '0');
+    
+    const fileName = `ristoranti_${year}-${month}-${day}_${hours}-${minutes}.json`;
+
+    const link = document.createElement('a');
+    link.href = href;
+    link.download = fileName;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // --- UPLOAD CSV ---
+  const handleCsvUpload = (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      Papa.parse(file, {
+        header: true, skipEmptyLines: true, delimiter: ";",
+        complete: (res) => {
+          const clean = normalizeData(res.data);
+          setData(clean);
+          fitMapToData(clean);
+          alert(`Caricati ${clean.length} ristoranti da CSV!`);
+        }
       });
     }
   };
@@ -474,14 +670,13 @@ export default function App() {
                                 <input value={editForm.citta} onChange={e => handleEditChange('citta', e.target.value)} placeholder="Città" style={{flex: 2, padding: '5px'}} />
                                 <input value={editForm.provincia} onChange={e => handleEditChange('provincia', e.target.value)} placeholder="Prov" style={{width: '50px', padding: '5px'}} />
                                 <input value={editForm.regione} onChange={e => handleEditChange('regione', e.target.value)} placeholder="Regione" style={{flex: 1, padding: '5px'}} />
-                            </div>
+                        </div>
 
-                            <input value={editForm.tipoContratto} onChange={e => handleEditChange('tipoContratto', e.target.value)} placeholder="Contratto" style={{width: '100%', marginBottom: '10px', padding: '5px'}} />
-                            
-                            <div style={{display:'flex', gap: '5px'}}>
-                                <button onClick={saveEditing} style={{flex: 1, background: '#27ae60', color: 'white', border: 'none', padding: '5px', cursor: 'pointer', borderRadius: '3px'}}>✅ Salva</button>
-                                <button onClick={cancelEditing} style={{flex: 1, background: '#e74c3c', color: 'white', border: 'none', padding: '5px', cursor: 'pointer', borderRadius: '3px'}}>❌ Annulla</button>
-                            </div>
+                        <input value={editForm.tipoContratto} onChange={e => handleEditChange('tipoContratto', e.target.value)} placeholder="Contratto" style={{width: '100%', marginBottom: '10px', padding: '5px'}} />
+                        
+                        <div style={{display:'flex', gap: '5px'}}>
+                            <button onClick={saveEditing} style={{flex: 1, background: '#27ae60', color: 'white', border: 'none', padding: '5px', cursor: 'pointer', borderRadius: '3px'}}>✅ Salva</button>
+                            <button onClick={cancelEditing} style={{flex: 1, background: '#e74c3c', color: 'white', border: 'none', padding: '5px', cursor: 'pointer', borderRadius: '3px'}}>❌ Annulla</button>
                         </div>
                     );
                 }
