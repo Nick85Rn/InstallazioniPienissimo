@@ -1,4 +1,14 @@
-import React, { useState, useMemo, useEffect } from 'react';
+
+                        <span>Stato Cliente</span>
+                        {filters.statoCliente.length > 0 && (
+                            <span onClick={() => setFilters({...filters, statoCliente: []})} style={{fontWeight: 'normal', fontSize: '12px', color: '#2980b9', cursor: 'pointer'}}>
+                                Seleziona tutti
+                            </span>
+                        )}
+                    </label>
+                    <div style={{background: 'white', border: '1px solid #bdc3c7', borderRadius: '4px', padding: '8px', maxHeight: '220px', overflowY: 'auto'}}>
+                        {options.statiCliente.length === 0 && (
+                            <div style={{fontSize: '12px', color: '#999', padding: '4px'}}>Nessuno stato disponibile</div>import React, { useState, useMemo, useEffect } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import MarkerClusterGroup from 'react-leaflet-cluster';
 import Papa from 'papaparse';
