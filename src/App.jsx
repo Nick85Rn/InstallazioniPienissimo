@@ -1,14 +1,4 @@
-
-                        <span>Stato Cliente</span>
-                        {filters.statoCliente.length > 0 && (
-                            <span onClick={() => setFilters({...filters, statoCliente: []})} style={{fontWeight: 'normal', fontSize: '12px', color: '#2980b9', cursor: 'pointer'}}>
-                                Seleziona tutti
-                            </span>
-                        )}
-                    </label>
-                    <div style={{background: 'white', border: '1px solid #bdc3c7', borderRadius: '4px', padding: '8px', maxHeight: '220px', overflowY: 'auto'}}>
-                        {options.statiCliente.length === 0 && (
-                            <div style={{fontSize: '12px', color: '#999', padding: '4px'}}>Nessuno stato disponibile</div>import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, useMap } from 'react-leaflet';
 import MarkerClusterGroup from 'react-leaflet-cluster';
 import Papa from 'papaparse';
@@ -678,6 +668,16 @@ export default function App() {
 
                 <div style={{marginBottom: '20px'}}>
                     <label style={{display:'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 'bold', marginBottom: '8px', fontSize: '14px'}}>
+                        <span>Stato Cliente</span>
+                        {filters.statoCliente.length > 0 && (
+                            <span onClick={() => setFilters({...filters, statoCliente: []})} style={{fontWeight: 'normal', fontSize: '12px', color: '#2980b9', cursor: 'pointer'}}>
+                                Seleziona tutti
+                            </span>
+                        )}
+                    </label>
+                    <div style={{background: 'white', border: '1px solid #bdc3c7', borderRadius: '4px', padding: '8px', maxHeight: '220px', overflowY: 'auto'}}>
+                        {options.statiCliente.length === 0 && (
+                            <div style={{fontSize: '12px', color: '#999', padding: '4px'}}>Nessuno stato disponibile</div>
                         )}
                         {options.statiCliente.map(stato => (
                             <label key={stato} style={{display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 4px', fontSize: '13px', cursor: 'pointer'}}>
