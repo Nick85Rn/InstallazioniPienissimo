@@ -26,6 +26,28 @@ const getMarkerColor = (contratto) => {
   return "#95a5a6";                             // Grigio
 };
 
+// Colore del badge stato cliente: verde per gli stati attivi, ambra per quelli
+// intermedi, rosso per quelli chiusi. Coerente con STATO_CLIENTE_ORDER sopra.
+const getStatoColor = (stato) => {
+  const s = (stato || "").toUpperCase();
+  if (s === "ATTIVO" || s === "GESTITO") return "#27ae60";
+  if (s === "PARZIALMENTE ATTIVO" || s === "NUOVO" || s === "DEMO") return "#e67e22";
+  if (s === "SOSPESO") return "#f39c12";
+  if (s === "NON ATTIVO" || s === "DISDETTO") return "#c0392b";
+  return "#95a5a6";
+};
+
+// Etichetta breve per la fonte dell'indirizzo (utile finché la migrazione
+// indirizzi da Zoho e' in corso: dice se il dato viene dalla scheda Locali
+// o e' stato recuperato da un fallback meno affidabile).
+const getFonteIndirizzoLabel = (fonte) => {
+  if (fonte === 'locali') return { label: 'da Locali', color: '#27ae60' };
+  if (fonte === 'sales_order') return { label: 'da ordine', color: '#e67e22' };
+  if (fonte === 'contact') return { label: 'da contatto', color: '#e67e22' };
+  if (fonte === 'manuale') return { label: 'manuale', color: '#3498db' };
+  return null;
+};
+
 const createCustomIcon = (contratto) => {
   const color = getMarkerColor(contratto);
   return L.divIcon({
@@ -114,6 +136,12 @@ export default function App() {
     contratto: "",
     statoCliente: []
   });
+
+  // --- ORDINAMENTO LISTA ---
+  const [sortBy, setSortBy] = useState('nome'); // 'nome' | 'stato' | 'regione'
+
+  // --- DETTAGLI ESPANSI (indirizzo completo) ---
+  const [expandedId, setExpandedId] = useState(null);
 
   // --- NORMALIZZAZIONE DATI ---
   // Due formati in ingresso:
@@ -345,7 +373,7 @@ export default function App() {
 
   // --- FILTRAGGIO ---
   const filteredData = useMemo(() => {
-    return data.filter(r => {
+    const result = data.filter(r => {
         const s = search.toLowerCase();
         const matchSearch = 
             r.nomeRistorante?.toLowerCase().includes(s) || 
@@ -360,7 +388,21 @@ export default function App() {
 
         return matchSearch && matchReg && matchProv && matchCont && matchStato;
     });
-  }, [data, search, filters]);
+
+    const sorted = [...result];
+    if (sortBy === 'nome') {
+      sorted.sort((a, b) => (a.nomeRistorante || '').localeCompare(b.nomeRistorante || ''));
+    } else if (sortBy === 'stato') {
+      sorted.sort((a, b) => {
+        const ia = STATO_CLIENTE_ORDER.indexOf(a.statoCliente);
+        const ib = STATO_CLIENTE_ORDER.indexOf(b.statoCliente);
+        return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+      });
+    } else if (sortBy === 'regione') {
+      sorted.sort((a, b) => (a.regione || '').localeCompare(b.regione || ''));
+    }
+    return sorted;
+  }, [data, search, filters, sortBy]);
 
   const options = useMemo(() => {
     const regions = [...new Set(data.map(r => r.regione))].sort();
@@ -438,6 +480,13 @@ export default function App() {
         : [...prev.statoCliente, stato];
       return { ...prev, statoCliente };
     });
+  };
+
+  // Cliccando una pillola contratto nella dashboard si filtra subito la lista
+  // per quel contratto, evitando di passare dalla scheda Filtri separata.
+  const filterByContratto = (tipo) => {
+    setFilters(prev => ({ ...prev, contratto: prev.contratto === tipo ? "" : tipo }));
+    setView('list');
   };
 
   const openGoogleMaps = (e, r) => {
@@ -560,13 +609,16 @@ export default function App() {
               <div style={{ background: 'white', padding: '15px', borderRadius: '8px', marginBottom: '15px', borderLeft: '5px solid #3498db', boxShadow: '0 2px 5px rgba(0,0,0,0.05)' }}>
                 <h3 style={{ margin: '0 0 10px 0', color: '#2c3e50' }}>Riepilogo</h3>
                 <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Totale:</span><strong>{stats.total}</strong></div>
-                <div style={{ display: 'flex', justifyContent: 'space-between' }}><span>Geolocalizzati:</span><strong>{stats.mapped}</strong></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '6px' }}><span>Geolocalizzati:</span><strong>{stats.mapped} / {stats.total}</strong></div>
+                <div style={{ height: '6px', background: '#eee', borderRadius: '3px', overflow: 'hidden' }}>
+                  <div style={{ height: '100%', width: `${stats.total > 0 ? (stats.mapped / stats.total) * 100 : 0}%`, background: '#3498db', borderRadius: '3px' }}></div>
+                </div>
               </div>
 
               <div style={{ background: 'white', padding: '15px', borderRadius: '8px', marginBottom: '15px', boxShadow: '0 2px 5px rgba(0,0,0,0.05)' }}>
-                <h4 style={{ margin: '0 0 10px 0', borderBottom: '1px solid #eee', paddingBottom: '5px' }}>📜 Contratti</h4>
+                <h4 style={{ margin: '0 0 10px 0', borderBottom: '1px solid #eee', paddingBottom: '5px' }}>Contratti <span style={{fontWeight: 'normal', fontSize: '11px', color: '#999'}}>· tocca per filtrare</span></h4>
                 {stats.byContract.map(([type, count]) => (
-                  <div key={type} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px', fontSize: '14px', alignItems: 'center' }}>
+                  <div key={type} onClick={() => filterByContratto(type)} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '5px', fontSize: '14px', alignItems: 'center', cursor: 'pointer', padding: '4px 6px', borderRadius: '4px', background: filters.contratto === type ? '#f0f4f8' : 'transparent' }}>
                     <div style={{display:'flex', alignItems: 'center', gap: '8px'}}>
                        <div style={{width: 10, height: 10, borderRadius: '50%', background: getMarkerColor(type)}}></div>
                        <span>{type}</span>
@@ -616,16 +668,6 @@ export default function App() {
 
                 <div style={{marginBottom: '20px'}}>
                     <label style={{display:'flex', justifyContent: 'space-between', alignItems: 'center', fontWeight: 'bold', marginBottom: '8px', fontSize: '14px'}}>
-                        <span>Stato Cliente</span>
-                        {filters.statoCliente.length > 0 && (
-                            <span onClick={() => setFilters({...filters, statoCliente: []})} style={{fontWeight: 'normal', fontSize: '12px', color: '#2980b9', cursor: 'pointer'}}>
-                                Seleziona tutti
-                            </span>
-                        )}
-                    </label>
-                    <div style={{background: 'white', border: '1px solid #bdc3c7', borderRadius: '4px', padding: '8px', maxHeight: '220px', overflowY: 'auto'}}>
-                        {options.statiCliente.length === 0 && (
-                            <div style={{fontSize: '12px', color: '#999', padding: '4px'}}>Nessuno stato disponibile</div>
                         )}
                         {options.statiCliente.map(stato => (
                             <label key={stato} style={{display: 'flex', alignItems: 'center', gap: '8px', padding: '5px 4px', fontSize: '13px', cursor: 'pointer'}}>
@@ -652,13 +694,23 @@ export default function App() {
           {/* 3. LISTA CON MODIFICA INLINE */}
           {view === 'list' && (
             <>
-              <input type="text" placeholder="Cerca..." onChange={(e) => setSearch(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px', borderRadius: '4px', border: '1px solid #ddd', boxSizing: 'border-box' }} />
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '10px' }}>
+                <input type="text" placeholder="Cerca..." onChange={(e) => setSearch(e.target.value)} style={{ flex: 1, padding: '10px', borderRadius: '4px', border: '1px solid #ddd', boxSizing: 'border-box' }} />
+                <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} style={{ padding: '10px', borderRadius: '4px', border: '1px solid #ddd' }}>
+                  <option value="nome">Nome</option>
+                  <option value="stato">Stato</option>
+                  <option value="regione">Regione</option>
+                </select>
+              </div>
               
               {filteredData.map((r) => {
                 const hasCoords = r.lat && r.lng;
                 const isSelected = selectedId === r.id;
                 const isEditing = editingId === r.id;
+                const isExpanded = expandedId === r.id;
                 const pinColor = getMarkerColor(r.tipoContratto);
+                const statoColor = getStatoColor(r.statoCliente);
+                const fonte = getFonteIndirizzoLabel(r.indirizzoFonte);
 
                 if (isEditing) {
                     return (
@@ -685,7 +737,7 @@ export default function App() {
                 return (
                   <div 
                     key={r.id} 
-                    onClick={() => handleRowClick(r)} 
+                    onClick={() => { handleRowClick(r); setExpandedId(isExpanded ? null : r.id); }} 
                     style={{ 
                       background: isSelected ? '#e3f2fd' : 'white', 
                       padding: '12px', marginBottom: '8px', borderRadius: '6px', cursor: 'pointer', 
@@ -696,14 +748,34 @@ export default function App() {
                     }}
                   >
                     <div onClick={(e) => startEditing(e, r)} title="Modifica Dati" style={{position: 'absolute', top: '10px', right: '10px', fontSize: '16px', cursor: 'pointer', opacity: 0.6}}>✏️</div>
-                    <div style={{ fontWeight: 'bold', color: '#2c3e50', paddingRight: '20px' }}>{r.nomeRistorante}</div>
-                    <div style={{ fontSize: '12px', color: '#e67e22', fontWeight: '600' }}>📍 {r.indirizzo}</div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', paddingRight: '20px', flexWrap: 'wrap' }}>
+                      <span style={{ fontWeight: 'bold', color: '#2c3e50' }}>{r.nomeRistorante}</span>
+                      {r.statoCliente && (
+                        <span style={{ fontSize: '10px', fontWeight: 'bold', color: 'white', background: statoColor, padding: '1px 6px', borderRadius: '999px' }}>{r.statoCliente}</span>
+                      )}
+                    </div>
+                    {r.ragioneSociale && (
+                      <div style={{ fontSize: '11px', color: '#999' }}>{r.ragioneSociale}</div>
+                    )}
+                    <div style={{ fontSize: '12px', color: '#e67e22', fontWeight: '600' }}>📍 {r.indirizzo || 'indirizzo non disponibile'}</div>
                     <div style={{ fontSize: '12px', color: '#888' }}>{r.citta} ({r.provincia}) - {r.regione}</div>
-                    <div style={{ fontSize: '11px', color: pinColor, marginTop: '3px', fontWeight: 'bold' }}>{r.tipoContratto} {r.statoCliente ? `· ${r.statoCliente}` : ''}</div>
-                    {isSelected && !hasCoords && (
-                      <button onClick={(e) => openGoogleMaps(e, r)} style={{ marginTop: '10px', width: '100%', padding: '8px', background: 'white', border: '1px solid #ddd', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}>
-                        🗺️ Vedi su Google Maps
-                      </button>
+                    <div style={{ fontSize: '11px', color: pinColor, marginTop: '3px', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                      <span>{r.tipoContratto}</span>
+                      {fonte && (
+                        <span style={{ fontWeight: 'normal', color: fonte.color, fontSize: '10px' }}>· {fonte.label}</span>
+                      )}
+                    </div>
+                    {isExpanded && (
+                      <div style={{ marginTop: '8px', paddingTop: '8px', borderTop: '1px dashed #ddd', fontSize: '11px', color: '#777' }}>
+                        {r.partitaIva && <div>P.IVA: {r.partitaIva}</div>}
+                        {r.cap && <div>CAP: {r.cap}</div>}
+                        {r.tipoCliente && <div>Tipo cliente: {r.tipoCliente}</div>}
+                        {!hasCoords && (
+                          <button onClick={(e) => openGoogleMaps(e, r)} style={{ marginTop: '8px', width: '100%', padding: '8px', background: 'white', border: '1px solid #ddd', borderRadius: '4px', cursor: 'pointer', fontSize: '12px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '5px' }}>
+                            🗺️ Vedi su Google Maps
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
                 );
