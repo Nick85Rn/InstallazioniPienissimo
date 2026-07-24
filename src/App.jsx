@@ -371,9 +371,16 @@ export default function App() {
     reader.readAsText(file);
   };
 
+  // --- SEPARAZIONE DISDETTI ---
+  // I clienti disdetti (contratto chiuso) sono la maggioranza dei locali senza indirizzo/regione
+  // e non hanno rilevanza operativa quotidiana: li teniamo fuori da mappa, statistiche e filtri
+  // di default, e li rendiamo disponibili solo nella scheda dedicata "Disdetti".
+  const activeData = useMemo(() => data.filter(r => r.statoCliente !== 'DISDETTO'), [data]);
+  const disdettiData = useMemo(() => data.filter(r => r.statoCliente === 'DISDETTO'), [data]);
+
   // --- FILTRAGGIO ---
   const filteredData = useMemo(() => {
-    const result = data.filter(r => {
+    const result = activeData.filter(r => {
         const s = search.toLowerCase();
         const matchSearch = 
             r.nomeRistorante?.toLowerCase().includes(s) || 
@@ -402,18 +409,28 @@ export default function App() {
       sorted.sort((a, b) => (a.regione || '').localeCompare(b.regione || ''));
     }
     return sorted;
-  }, [data, search, filters, sortBy]);
+  }, [activeData, search, filters, sortBy]);
+
+  // Lista disdetti filtrata dalla stessa barra di ricerca, per coerenza con la scheda Lista
+  const disdettiFiltered = useMemo(() => {
+    const s = search.toLowerCase();
+    return disdettiData.filter(r =>
+      r.nomeRistorante?.toLowerCase().includes(s) ||
+      r.citta?.toLowerCase().includes(s) ||
+      r.indirizzo?.toLowerCase().includes(s)
+    );
+  }, [disdettiData, search]);
 
   const options = useMemo(() => {
-    const regions = [...new Set(data.map(r => r.regione))].sort();
+    const regions = [...new Set(activeData.map(r => r.regione))].sort();
     const availableProvs = filters.regione 
-        ? [...new Set(data.filter(r => r.regione === filters.regione).map(r => r.provincia))].sort()
-        : [...new Set(data.map(r => r.provincia))].sort();
-    const contracts = [...new Set(data.map(r => r.tipoContratto))].sort();
+        ? [...new Set(activeData.filter(r => r.regione === filters.regione).map(r => r.provincia))].sort()
+        : [...new Set(activeData.map(r => r.provincia))].sort();
+    const contracts = [...new Set(activeData.map(r => r.tipoContratto))].sort();
 
     // Stati cliente presenti nei dati, ordinati secondo STATO_CLIENTE_ORDER
     // (quelli non previsti in quella lista finiscono in coda, in ordine alfabetico)
-    const statesPresent = [...new Set(data.map(r => r.statoCliente).filter(Boolean))];
+    const statesPresent = [...new Set(activeData.map(r => r.statoCliente).filter(Boolean))];
     const statiCliente = statesPresent.sort((a, b) => {
         const ia = STATO_CLIENTE_ORDER.indexOf(a);
         const ib = STATO_CLIENTE_ORDER.indexOf(b);
@@ -424,7 +441,7 @@ export default function App() {
     });
 
     return { regions, provinces: availableProvs, contracts, statiCliente };
-  }, [data, filters.regione]);
+  }, [activeData, filters.regione]);
 
   const stats = useMemo(() => {
     const subset = filteredData;
@@ -585,12 +602,16 @@ export default function App() {
 
           <div style={{ fontSize: '12px', opacity: 0.8, marginTop: '8px' }}>
              Visualizzati: <strong>{stats.total}</strong> ({stats.mapped} su mappa){saving && ' · 💾 salvataggio...'}
+             {disdettiData.length > 0 && (
+               <span style={{ opacity: 0.7 }}> · {disdettiData.length} disdetti esclusi</span>
+             )}
           </div>
 
           <div style={{ marginTop: '15px', display: 'flex', gap: '5px' }}>
             <button onClick={() => setView('dashboard')} style={{ flex: 1, padding: '8px', cursor: 'pointer', borderRadius: '4px', border: 'none', background: view==='dashboard'?'#34495e':'rgba(255,255,255,0.2)', color: 'white', fontSize:'13px' }}>📊 Dati</button>
             <button onClick={() => setView('list')} style={{ flex: 1, padding: '8px', cursor: 'pointer', borderRadius: '4px', border: 'none', background: view==='list'?'#34495e':'rgba(255,255,255,0.2)', color: 'white', fontSize:'13px' }}>📋 Lista</button>
             <button onClick={() => setView('filters')} style={{ flex: 1, padding: '8px', cursor: 'pointer', borderRadius: '4px', border: 'none', background: view==='filters'?'#34495e':'rgba(255,255,255,0.2)', color: 'white', fontSize:'13px' }}>🌪️ Filtri</button>
+            <button onClick={() => setView('disdetti')} title={`${disdettiData.length} clienti disdetti, esclusi da mappa e statistiche`} style={{ flex: 1, padding: '8px', cursor: 'pointer', borderRadius: '4px', border: 'none', background: view==='disdetti'?'#34495e':'rgba(255,255,255,0.2)', color: 'white', fontSize:'13px' }}>🗑️ Disdetti</button>
           </div>
         </div>
 
@@ -691,10 +712,6 @@ export default function App() {
                         ))}
                     </div>
                     <div style={{fontSize: '11px', color: '#999', marginTop: '4px'}}>
-                        {filters.statoCliente.length === 0
-                            ? 'Nessuno selezionato = mostra tutti gli stati'
-                            : `${filters.statoCliente.length} stat${filters.statoCliente.length === 1 ? 'o' : 'i'} selezionat${filters.statoCliente.length === 1 ? 'o' : 'i'}`}
-                    </div>
                 </div>
 
                 <button onClick={() => setFilters({ regione: "", provincia: "", contratto: "", statoCliente: [] })} style={{width: '100%', padding: '12px', background: '#e74c3c', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold'}}>❌ Resetta Filtri</button>
@@ -790,6 +807,37 @@ export default function App() {
                   </div>
                 );
               })}
+            </>
+          )}
+
+          {/* 4. DISDETTI (esclusi da mappa e statistiche) */}
+          {view === 'disdetti' && (
+            <>
+              <div style={{ background: '#fdecea', padding: '10px', borderRadius: '6px', marginBottom: '12px', fontSize: '12px', color: '#c0392b', borderLeft: '4px solid #e74c3c' }}>
+                🗑️ {disdettiData.length} clienti disdetti. Esclusi da mappa, statistiche e filtri per non "sporcare" la vista operativa.
+              </div>
+              <input type="text" placeholder="Cerca nei disdetti..." onChange={(e) => setSearch(e.target.value)} style={{ width: '100%', padding: '10px', marginBottom: '10px', borderRadius: '4px', border: '1px solid #ddd', boxSizing: 'border-box' }} />
+              {disdettiFiltered.map((r) => {
+                const fonte = getFonteIndirizzoLabel(r.indirizzoFonte);
+                return (
+                  <div key={r.id} style={{ background: '#fafafa', padding: '10px', marginBottom: '6px', borderRadius: '6px', borderLeft: '4px solid #bdc3c7', fontSize: '13px' }}>
+                    <div style={{ fontWeight: 'bold', color: '#555' }}>{r.nomeRistorante}</div>
+                    {r.ragioneSociale && (
+                      <div style={{ fontSize: '11px', color: '#999' }}>{r.ragioneSociale}</div>
+                    )}
+                    <div style={{ fontSize: '12px', color: '#888' }}>
+                      {r.indirizzo ? `📍 ${r.indirizzo}` : 'indirizzo non disponibile'}
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#aaa' }}>
+                      {r.citta}{r.citta && r.provincia ? ` (${r.provincia})` : r.provincia}
+                      {fonte && <span> · {fonte.label}</span>}
+                    </div>
+                  </div>
+                );
+              })}
+              {disdettiFiltered.length === 0 && (
+                <div style={{ textAlign: 'center', color: '#999', padding: '20px', fontSize: '13px' }}>Nessun disdetto trovato.</div>
+              )}
             </>
           )}
         </div>
