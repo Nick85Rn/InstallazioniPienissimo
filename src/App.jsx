@@ -712,6 +712,10 @@ export default function App() {
                         ))}
                     </div>
                     <div style={{fontSize: '11px', color: '#999', marginTop: '4px'}}>
+                        {filters.statoCliente.length === 0
+                            ? 'Nessuno selezionato = mostra tutti gli stati'
+                            : `${filters.statoCliente.length} stat${filters.statoCliente.length === 1 ? 'o' : 'i'} selezionat${filters.statoCliente.length === 1 ? 'o' : 'i'}`}
+                    </div>
                 </div>
 
                 <button onClick={() => setFilters({ regione: "", provincia: "", contratto: "", statoCliente: [] })} style={{width: '100%', padding: '12px', background: '#e74c3c', color: 'white', border: 'none', borderRadius: '4px', cursor: 'pointer', fontWeight: 'bold'}}>❌ Resetta Filtri</button>
